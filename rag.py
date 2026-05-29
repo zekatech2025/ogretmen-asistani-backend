@@ -1,31 +1,32 @@
 import os
+import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
-from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
 
+genai.configure(api_key=GEMINI_API_KEY)
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-_embedder = None
 
-def get_embedder():
-    global _embedder
-    if _embedder is None:
-        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
-    return _embedder
+def get_embedding(text: str) -> list[float]:
+    result = genai.embed_content(
+        model="models/text-embedding-004",
+        content=text,
+        task_type="retrieval_query"
+    )
+    return result["embedding"]
 
 
 def retrieve(query: str, n_results: int = 5) -> list[dict]:
-    embedder = get_embedder()
-    query_embedding = embedder.encode(query).tolist()
+    embedding = get_embedding(query)
 
-    # Supabase pgvector benzerlik araması
     result = sb.rpc("match_documents", {
-        "query_embedding": query_embedding,
+        "query_embedding": embedding,
         "match_threshold": 0.3,
         "match_count": n_results
     }).execute()

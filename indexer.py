@@ -1,27 +1,33 @@
 """
-PDF İndeksleme Scripti — Supabase pgvector
+PDF İndeksleme Scripti — Gemini Embedding
 Kullanım: python indexer.py --pdf-dir ./pdfs
 Tek PDF:  python indexer.py --file ./pdfs/belge.pdf
 """
 import os
 import sys
 import argparse
-import fitz  # PyMuPDF
+import fitz
+import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client
-from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
 
+genai.configure(api_key=GEMINI_API_KEY)
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# Ücretsiz, lokal embedding modeli (384 boyut)
-print("🔄 Embedding modeli yükleniyor...")
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
-print("✅ Model hazır.")
+
+def get_embedding(text: str) -> list[float]:
+    result = genai.embed_content(
+        model="models/text-embedding-004",
+        content=text,
+        task_type="retrieval_document"
+    )
+    return result["embedding"]
 
 
 def extract_text(pdf_path: str) -> list[dict]:
@@ -63,7 +69,6 @@ def index_pdf(pdf_path: str):
     doc_name = os.path.splitext(os.path.basename(pdf_path))[0]
     print(f"\n📄 İşleniyor: {doc_name}")
 
-    # Eski kayıtları sil
     sb.table("documents").delete().eq("metadata->>document", doc_name).execute()
 
     pages = extract_text(pdf_path)
@@ -77,24 +82,22 @@ def index_pdf(pdf_path: str):
         return
 
     print(f"  🔄 {len(chunks)} chunk embedding'e çevriliyor...")
-    texts = [c["text"] for c in chunks]
-    embeddings = embedder.encode(texts, show_progress_bar=True)
 
-    # Batch olarak Supabase'e ekle
     batch_size = 50
     for i in range(0, len(chunks), batch_size):
-        batch_chunks = chunks[i:i + batch_size]
-        batch_embeddings = embeddings[i:i + batch_size]
+        batch = chunks[i:i + batch_size]
         rows = []
-        for j, chunk in enumerate(batch_chunks):
+        for chunk in batch:
+            embedding = get_embedding(chunk["text"])
             rows.append({
                 "content": chunk["text"],
                 "metadata": chunk["metadata"],
-                "embedding": batch_embeddings[j].tolist()
+                "embedding": embedding
             })
         sb.table("documents").insert(rows).execute()
+        print(f"  ✅ {min(i + batch_size, len(chunks))}/{len(chunks)} chunk eklendi.")
 
-    print(f"  ✅ {len(chunks)} chunk Supabase'e eklendi.")
+    print(f"  ✅ Tamamlandı!")
 
 
 def index_directory(pdf_dir: str):
@@ -105,8 +108,6 @@ def index_directory(pdf_dir: str):
     print(f"🗂  {len(pdf_files)} PDF bulundu.")
     for pdf_file in pdf_files:
         index_pdf(os.path.join(pdf_dir, pdf_file))
-    total = sb.table("documents").select("id", count="exact").execute()
-    print(f"\n✅ Toplam {total.count} chunk Supabase'de.")
 
 
 if __name__ == "__main__":
