@@ -1,79 +1,56 @@
 import os
-import chromadb
-from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
+from supabase import create_client
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SUPABASE_URL         = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-_client = None
-_collection = None
+sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
+_embedder = None
 
-def get_collection():
-    global _client, _collection
-    if _collection is None:
-        _client = chromadb.PersistentClient(path=CHROMA_PATH)
-        embedding_fn = embedding_functions.GoogleGenerativeAiEmbeddingFunction(
-            api_key=GEMINI_API_KEY,
-            model_name="models/text-embedding-004"
-        )
-        _collection = _client.get_or_create_collection(
-            name="meb_mevzuat",
-            embedding_function=embedding_fn,
-            metadata={"hnsw:space": "cosine"}
-        )
-    return _collection
+def get_embedder():
+    global _embedder
+    if _embedder is None:
+        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    return _embedder
 
 
 def retrieve(query: str, n_results: int = 5) -> list[dict]:
-    """
-    Soruya en yakın PDF parçalarını döner.
-    """
-    collection = get_collection()
+    embedder = get_embedder()
+    query_embedding = embedder.encode(query).tolist()
 
-    if collection.count() == 0:
-        return []
-
-    results = collection.query(
-        query_texts=[query],
-        n_results=min(n_results, collection.count()),
-        include=["documents", "metadatas", "distances"]
-    )
+    # Supabase pgvector benzerlik araması
+    result = sb.rpc("match_documents", {
+        "query_embedding": query_embedding,
+        "match_threshold": 0.3,
+        "match_count": n_results
+    }).execute()
 
     chunks = []
-    for i, doc in enumerate(results["documents"][0]):
-        meta = results["metadatas"][0][i]
-        distance = results["distances"][0][i]
-
-        # Çok uzak sonuçları filtrele (cosine distance > 0.7)
-        if distance < 0.7:
-            chunks.append({
-                "text": doc,
-                "document": meta.get("document", "Bilinmeyen Belge"),
-                "page": meta.get("page", 0),
-                "score": round(1 - distance, 3)
-            })
+    for row in (result.data or []):
+        chunks.append({
+            "text": row["content"],
+            "document": row["metadata"].get("document", "Bilinmeyen Belge"),
+            "page": row["metadata"].get("page", 0),
+            "score": round(row.get("similarity", 0), 3)
+        })
 
     return chunks
 
 
 def build_context(chunks: list[dict]) -> tuple[str, list[str]]:
-    """
-    Chunk'lardan model için bağlam metni ve kaynak listesi oluşturur.
-    """
     if not chunks:
         return "", []
 
+    sources = list({c["document"] for c in chunks})
     context_parts = []
-    sources = list({c["document"] for c in chunks})  # Tekrarsız kaynaklar
-
     for c in chunks:
         context_parts.append(
             f"[Kaynak: {c['document']}, Sayfa {c['page']}]\n{c['text']}"
         )
 
-    context = "\n\n---\n\n".join(context_parts)
-    return context, sources
+    return "\n\n---\n\n".join(context_parts), sources

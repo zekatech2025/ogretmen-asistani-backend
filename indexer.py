@@ -1,39 +1,30 @@
 """
-PDF İndeksleme Scripti
+PDF İndeksleme Scripti — Supabase pgvector
 Kullanım: python indexer.py --pdf-dir ./pdfs
-Yeni PDF için: python indexer.py --file ./pdfs/yeni_belge.pdf
+Tek PDF:  python indexer.py --file ./pdfs/belge.pdf
 """
 import os
 import sys
 import argparse
 import fitz  # PyMuPDF
-import chromadb
-from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
+from supabase import create_client
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
-CHROMA_PATH = os.getenv("CHROMA_PATH", "./chroma_db")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SUPABASE_URL         = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-# ChromaDB bağlantısı
-client = chromadb.PersistentClient(path=CHROMA_PATH)
+sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# Google embedding fonksiyonu
-embedding_fn = embedding_functions.GoogleGenerativeAiEmbeddingFunction(
-    api_key=GEMINI_API_KEY,
-    model_name="models/text-embedding-004"
-)
-
-collection = client.get_or_create_collection(
-    name="meb_mevzuat",
-    embedding_function=embedding_fn,
-    metadata={"hnsw:space": "cosine"}
-)
+# Ücretsiz, lokal embedding modeli (384 boyut)
+print("🔄 Embedding modeli yükleniyor...")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
+print("✅ Model hazır.")
 
 
 def extract_text(pdf_path: str) -> list[dict]:
-    """PDF'den metin çıkarır, sayfa bazında döner."""
     doc = fitz.open(pdf_path)
     pages = []
     for i, page in enumerate(doc):
@@ -44,27 +35,18 @@ def extract_text(pdf_path: str) -> list[dict]:
     return pages
 
 
-def chunk_text(pages: list[dict], doc_name: str, chunk_size: int = 400, overlap: int = 50) -> list[dict]:
-    """
-    Metni chunk'lara böler.
-    Hukuki/mevzuat metinler için madde başlarından bölmeye çalışır.
-    """
+def chunk_text(pages: list[dict], doc_name: str, chunk_size: int = 300, overlap: int = 50) -> list[dict]:
     chunks = []
     chunk_id = 0
-
     for page_data in pages:
-        text = page_data["text"]
+        words = page_data["text"].split()
         page_num = page_data["page"]
-        words = text.split()
-
         i = 0
         while i < len(words):
             chunk_words = words[i:i + chunk_size]
             chunk_text = " ".join(chunk_words)
-
-            if len(chunk_text.strip()) > 50:  # Çok kısa chunk'ları atla
+            if len(chunk_text.strip()) > 50:
                 chunks.append({
-                    "id": f"{doc_name}_p{page_num}_c{chunk_id}",
                     "text": chunk_text,
                     "metadata": {
                         "document": doc_name,
@@ -73,62 +55,62 @@ def chunk_text(pages: list[dict], doc_name: str, chunk_size: int = 400, overlap:
                     }
                 })
                 chunk_id += 1
-
             i += chunk_size - overlap
-
     return chunks
 
 
 def index_pdf(pdf_path: str):
-    """Tek bir PDF'i indeksler."""
     doc_name = os.path.splitext(os.path.basename(pdf_path))[0]
-    print(f"📄 İşleniyor: {doc_name}")
+    print(f"\n📄 İşleniyor: {doc_name}")
 
-    # Daha önce indekslenmiş mi kontrol et
-    existing = collection.get(where={"document": doc_name})
-    if existing["ids"]:
-        print(f"  ⚠️  Zaten indekslenmiş, siliniyor ve yeniden ekleniyor...")
-        collection.delete(where={"document": doc_name})
+    # Eski kayıtları sil
+    sb.table("documents").delete().eq("metadata->>document", doc_name).execute()
 
     pages = extract_text(pdf_path)
     if not pages:
-        print(f"  ❌ Metin çıkarılamadı: {pdf_path}")
+        print("  ❌ Metin çıkarılamadı.")
         return
 
     chunks = chunk_text(pages, doc_name)
     if not chunks:
-        print(f"  ❌ Chunk oluşturulamadı: {pdf_path}")
+        print("  ❌ Chunk oluşturulamadı.")
         return
 
-    # Batch olarak ekle (max 100'er)
-    batch_size = 100
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i:i + batch_size]
-        collection.add(
-            ids=[c["id"] for c in batch],
-            documents=[c["text"] for c in batch],
-            metadatas=[c["metadata"] for c in batch]
-        )
+    print(f"  🔄 {len(chunks)} chunk embedding'e çevriliyor...")
+    texts = [c["text"] for c in chunks]
+    embeddings = embedder.encode(texts, show_progress_bar=True)
 
-    print(f"  ✅ {len(chunks)} chunk eklendi.")
+    # Batch olarak Supabase'e ekle
+    batch_size = 50
+    for i in range(0, len(chunks), batch_size):
+        batch_chunks = chunks[i:i + batch_size]
+        batch_embeddings = embeddings[i:i + batch_size]
+        rows = []
+        for j, chunk in enumerate(batch_chunks):
+            rows.append({
+                "content": chunk["text"],
+                "metadata": chunk["metadata"],
+                "embedding": batch_embeddings[j].tolist()
+            })
+        sb.table("documents").insert(rows).execute()
+
+    print(f"  ✅ {len(chunks)} chunk Supabase'e eklendi.")
 
 
 def index_directory(pdf_dir: str):
-    """Klasördeki tüm PDF'leri indeksler."""
     pdf_files = [f for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")]
     if not pdf_files:
         print(f"❌ {pdf_dir} klasöründe PDF bulunamadı.")
         return
-
-    print(f"🗂  {len(pdf_files)} PDF bulundu.\n")
+    print(f"🗂  {len(pdf_files)} PDF bulundu.")
     for pdf_file in pdf_files:
         index_pdf(os.path.join(pdf_dir, pdf_file))
-
-    print(f"\n✅ Toplam {collection.count()} chunk veritabanında.")
+    total = sb.table("documents").select("id", count="exact").execute()
+    print(f"\n✅ Toplam {total.count} chunk Supabase'de.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="MEB Mevzuat PDF İndeksleyici")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--pdf-dir", help="PDF klasörü")
     parser.add_argument("--file", help="Tek PDF dosyası")
     args = parser.parse_args()
@@ -139,5 +121,4 @@ if __name__ == "__main__":
         index_directory(args.pdf_dir)
     else:
         print("Kullanım: python indexer.py --pdf-dir ./pdfs")
-        print("       veya: python indexer.py --file ./pdfs/belge.pdf")
         sys.exit(1)
