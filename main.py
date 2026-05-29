@@ -73,7 +73,10 @@ async def get_user_quota(user_id: str) -> tuple[int, int]:
 
 
 async def increment_quota(user_id: str):
-    sb.rpc("increment_prompts_used", {"p_user_id": user_id}).execute()
+    try:
+        sb.rpc("increment_prompts_used", {"p_user_id": user_id}).execute()
+    except Exception:
+        pass  # 204 No Content normal, hata değil
 
 
 async def verify_token(request: Request) -> str:
