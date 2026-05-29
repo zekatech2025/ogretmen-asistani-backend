@@ -1,27 +1,22 @@
-import os
-from google import genai
-from google.genai import types
+import os, requests
 from dotenv import load_dotenv
 from supabase import create_client
 
 load_dotenv()
 
-SUPABASE_URL         = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
-
-client = genai.Client(api_key=GEMINI_API_KEY)
-sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY"))
 
 def get_embedding(text: str) -> list[float]:
-    response = client.models.embed_content(
-        model="text-embedding-004",
-        contents=text,
-        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
-    )
-    return response.embeddings[0].values
-
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={GEMINI_API_KEY}"
+    payload = {
+        "model": "models/text-embedding-004",
+        "content": {"parts": [{"text": text}]},
+        "taskType": "RETRIEVAL_QUERY"
+    }
+    res = requests.post(url, json=payload)
+    res.raise_for_status()
+    return res.json()["embedding"]["values"]
 
 def retrieve(query: str, n_results: int = 5) -> list[dict]:
     embedding = get_embedding(query)
@@ -41,10 +36,9 @@ def retrieve(query: str, n_results: int = 5) -> list[dict]:
         })
     return chunks
 
-
 def build_context(chunks: list[dict]) -> tuple[str, list[str]]:
     if not chunks:
         return "", []
     sources = list({c["document"] for c in chunks})
-    context_parts = [f"[Kaynak: {c['document']}, Sayfa {c['page']}]\n{c['text']}" for c in chunks]
-    return "\n\n---\n\n".join(context_parts), sources
+    parts = [f"[Kaynak: {c['document']}, Sayfa {c['page']}]\n{c['text']}" for c in chunks]
+    return "\n\n---\n\n".join(parts), sources
