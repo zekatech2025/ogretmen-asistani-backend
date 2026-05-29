@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 python-dotenv
-google-generativeai
+google-genai
 pymupdf
 supabase==1.2.0
 python-jose[cryptography]

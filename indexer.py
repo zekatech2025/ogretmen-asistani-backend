@@ -1,13 +1,9 @@
-"""
-PDF İndeksleme Scripti — Gemini Embedding
-Kullanım: python indexer.py --pdf-dir ./pdfs
-Tek PDF:  python indexer.py --file ./pdfs/belge.pdf
-"""
 import os
 import sys
 import argparse
 import fitz
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -17,17 +13,17 @@ SUPABASE_URL         = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 def get_embedding(text: str) -> list[float]:
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=text,
-        task_type="retrieval_document"
+    response = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text,
+        config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
     )
-    return result["embedding"]
+    return response.embeddings[0].values
 
 
 def extract_text(pdf_path: str) -> list[dict]:
@@ -54,11 +50,7 @@ def chunk_text(pages: list[dict], doc_name: str, chunk_size: int = 300, overlap:
             if len(chunk_text.strip()) > 50:
                 chunks.append({
                     "text": chunk_text,
-                    "metadata": {
-                        "document": doc_name,
-                        "page": page_num,
-                        "chunk": chunk_id
-                    }
+                    "metadata": {"document": doc_name, "page": page_num, "chunk": chunk_id}
                 })
                 chunk_id += 1
             i += chunk_size - overlap
@@ -68,7 +60,6 @@ def chunk_text(pages: list[dict], doc_name: str, chunk_size: int = 300, overlap:
 def index_pdf(pdf_path: str):
     doc_name = os.path.splitext(os.path.basename(pdf_path))[0]
     print(f"\n📄 İşleniyor: {doc_name}")
-
     sb.table("documents").delete().eq("metadata->>document", doc_name).execute()
 
     pages = extract_text(pdf_path)
@@ -82,8 +73,7 @@ def index_pdf(pdf_path: str):
         return
 
     print(f"  🔄 {len(chunks)} chunk embedding'e çevriliyor...")
-
-    batch_size = 50
+    batch_size = 20
     for i in range(0, len(chunks), batch_size):
         batch = chunks[i:i + batch_size]
         rows = []
@@ -96,8 +86,7 @@ def index_pdf(pdf_path: str):
             })
         sb.table("documents").insert(rows).execute()
         print(f"  ✅ {min(i + batch_size, len(chunks))}/{len(chunks)} chunk eklendi.")
-
-    print(f"  ✅ Tamamlandı!")
+    print("  ✅ Tamamlandı!")
 
 
 def index_directory(pdf_dir: str):
@@ -112,10 +101,9 @@ def index_directory(pdf_dir: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdf-dir", help="PDF klasörü")
-    parser.add_argument("--file", help="Tek PDF dosyası")
+    parser.add_argument("--pdf-dir")
+    parser.add_argument("--file")
     args = parser.parse_args()
-
     if args.file:
         index_pdf(args.file)
     elif args.pdf_dir:

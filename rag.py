@@ -1,5 +1,6 @@
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -9,22 +10,21 @@ SUPABASE_URL         = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 def get_embedding(text: str) -> list[float]:
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=text,
-        task_type="retrieval_query"
+    response = client.models.embed_content(
+        model="text-embedding-004",
+        contents=text,
+        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
     )
-    return result["embedding"]
+    return response.embeddings[0].values
 
 
 def retrieve(query: str, n_results: int = 5) -> list[dict]:
     embedding = get_embedding(query)
-
     result = sb.rpc("match_documents", {
         "query_embedding": embedding,
         "match_threshold": 0.3,
@@ -39,19 +39,12 @@ def retrieve(query: str, n_results: int = 5) -> list[dict]:
             "page": row["metadata"].get("page", 0),
             "score": round(row.get("similarity", 0), 3)
         })
-
     return chunks
 
 
 def build_context(chunks: list[dict]) -> tuple[str, list[str]]:
     if not chunks:
         return "", []
-
     sources = list({c["document"] for c in chunks})
-    context_parts = []
-    for c in chunks:
-        context_parts.append(
-            f"[Kaynak: {c['document']}, Sayfa {c['page']}]\n{c['text']}"
-        )
-
+    context_parts = [f"[Kaynak: {c['document']}, Sayfa {c['page']}]\n{c['text']}" for c in chunks]
     return "\n\n---\n\n".join(context_parts), sources

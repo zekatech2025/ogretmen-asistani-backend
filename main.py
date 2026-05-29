@@ -1,5 +1,5 @@
 import os
-import google.generativeai as genai
+from google import genai as google_genai
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,17 +11,13 @@ load_dotenv()
 GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-ALLOWED_ORIGINS      = os.getenv("ALLOWED_ORIGINS", "").split(",")
+ALLOWED_ORIGINS      = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 MAX_PROMPTS          = int(os.getenv("MAX_PROMPTS_PER_USER", "1000"))
 
-# Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
-
-# Supabase
+gemini = google_genai.Client(api_key=GEMINI_API_KEY)
 sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-app = FastAPI(title="Öğretmen Asistanı API", version="1.0.0")
+app = FastAPI(title="Öğretmen Asistanı API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,9 +64,7 @@ async def get_user_quota(user_id: str) -> tuple[int, int]:
         }).execute()
         return 0, MAX_PROMPTS
     row = result.data[0]
-    used = row["prompts_used"]
-    limit = row["prompts_limit"]
-    return used, limit - used
+    return row["prompts_used"], row["prompts_limit"] - row["prompts_used"]
 
 
 async def increment_quota(user_id: str):
@@ -91,7 +85,7 @@ async def verify_token(request: Request) -> str:
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "Öğretmen Asistanı API"}
+    return {"status": "ok"}
 
 
 @app.get("/health")
@@ -121,29 +115,24 @@ async def chat(request: Request, body: ChatRequest):
     prompt = SYSTEM_PROMPT.format(context=context) + f"\n\nKullanıcı sorusu: {body.message}"
 
     try:
-        response = model.generate_content(prompt)
+        response = gemini.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt
+        )
         answer = response.text
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model hatası: {str(e)}")
 
     await increment_quota(user_id)
 
-    return ChatResponse(
-        answer=answer,
-        sources=sources,
-        prompts_remaining=remaining - 1
-    )
+    return ChatResponse(answer=answer, sources=sources, prompts_remaining=remaining - 1)
 
 
 @app.get("/user/quota")
 async def get_quota(request: Request):
     user_id = await verify_token(request)
     used, remaining = await get_user_quota(user_id)
-    return {
-        "prompts_used": used,
-        "prompts_remaining": remaining,
-        "prompts_limit": MAX_PROMPTS
-    }
+    return {"prompts_used": used, "prompts_remaining": remaining, "prompts_limit": MAX_PROMPTS}
 
 
 if __name__ == "__main__":
