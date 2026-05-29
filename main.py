@@ -5,9 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from supabase import create_client, Client
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 
 load_dotenv()
 
@@ -24,16 +21,11 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 # Supabase
 sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address)
-
 app = FastAPI(title="Öğretmen Asistanı API", version="1.0.0")
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,7 +100,6 @@ async def health():
 
 
 @app.post("/chat", response_model=ChatResponse)
-@limiter.limit("10/minute")
 async def chat(request: Request, body: ChatRequest):
     user_id = await verify_token(request)
     used, remaining = await get_user_quota(user_id)

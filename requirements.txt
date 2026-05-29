@@ -6,5 +6,4 @@ chromadb
 pymupdf
 supabase==1.2.0
 python-jose[cryptography]
-slowapi
 pydantic
