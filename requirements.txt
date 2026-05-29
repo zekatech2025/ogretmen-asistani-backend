@@ -2,7 +2,8 @@ fastapi
 uvicorn
 python-dotenv
 google-generativeai
-chromadb
+chromadb==0.4.22
+numpy<2.0
 pymupdf
 supabase==1.2.0
 python-jose[cryptography]
