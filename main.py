@@ -1,5 +1,4 @@
-import os
-from google import genai as google_genai
+import os, requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,10 +10,8 @@ load_dotenv()
 GEMINI_API_KEY       = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL         = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
-ALLOWED_ORIGINS      = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 MAX_PROMPTS          = int(os.getenv("MAX_PROMPTS_PER_USER", "1000"))
 
-gemini = google_genai.Client(api_key=GEMINI_API_KEY)
 sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 app = FastAPI(title="Öğretmen Asistanı API")
@@ -41,6 +38,14 @@ Her cevabının sonuna şu uyarıyı ekle:
 
 Belge parçaları:
 {context}"""
+
+
+def generate_answer(prompt: str) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    res = requests.post(url, json=payload)
+    res.raise_for_status()
+    return res.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 
 class ChatRequest(BaseModel):
@@ -115,16 +120,11 @@ async def chat(request: Request, body: ChatRequest):
     prompt = SYSTEM_PROMPT.format(context=context) + f"\n\nKullanıcı sorusu: {body.message}"
 
     try:
-        response = gemini.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt
-        )
-        answer = response.text
+        answer = generate_answer(prompt)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Model hatası: {str(e)}")
 
     await increment_quota(user_id)
-
     return ChatResponse(answer=answer, sources=sources, prompts_remaining=remaining - 1)
 
 
